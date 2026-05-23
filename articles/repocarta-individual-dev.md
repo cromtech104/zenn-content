@@ -135,4 +135,4 @@ GitHubアカウントがあれば**無料で始められます**。プライベ�
 
 https://repocarta.jp
 
-フィードバックお待ちしています。コメント欄・X（[@takuyahoritacromtech](https://x.com/takuyahoritacromtech)）どちらでも歓迎です。
+フィードバックお待ちしています。コメント欄からどうぞ。
