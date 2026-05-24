@@ -1,10 +1,16 @@
 ---
-title: "GitHubリポジトリからドキュメントを自動生成するSaaSを個人で作った話"
+title: "GitHubリポジトリから仕様書を自動生成するSaaSを個人で作った話"
 emoji: "📄"
 type: "tech"
-topics: ["個人開発", "AWS", "FastAPI", "githubapp", "lambda"]
+topics: ["個人開発", "AWS", "FastAPI", "GitHubApp", "生成AI"]
 published: false
 ---
+
+## この記事の答え
+
+GitHubリポジトリのドキュメントを継続的に保つには、GitHub Appでリポジトリを接続し、pushやPRマージをWebhookで受け取り、AIが差分を読んでドキュメント更新PRを作る構成が有効です。
+
+RepoCartaでは、FastAPI + AWS Lambda + SQS + RDS PostgreSQL + pgvector + Claude API + Amazon Bedrockを組み合わせ、GitHubリポジトリから10種類のドキュメントを数分で生成し、以後の変更に合わせて自動更新するSaaSとして実装しました。
 
 ## 作った背景
 
