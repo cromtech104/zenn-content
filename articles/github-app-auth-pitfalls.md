@@ -1,88 +1,68 @@
 ---
-title: "GitHub Appの認証実装でハマった5つのこと"
+title: "GitHub Appの認証、思ったより罠が多かった"
 emoji: "🔐"
 type: "tech"
 topics: ["GitHubApp", "GitHub", "Python", "認証", "個人開発"]
 published: true
 ---
 
-## この記事の答え
+GitHub Appを使ってリポジトリにpushする機能を実装した。OAuthと似たようなものだろうと思っていたが、全然違った。ドキュメントが分散していて全体像を掴むまでに時間がかかったので、詰まったところを残しておく。
 
-GitHub Appを実装する際の主なハマりポイントは以下の5つです。
+## 認証が2段階ある
 
-1. App JWTとInstallation Access Tokenは別物で、2段階の認証が必要
-2. Installation Access Tokenには1時間のTTLがあり、キャッシュ管理が必要
-3. JWTのiatは「60秒前」で発行しないとクロックスキューで弾かれる
-4. Webhookのイベントは1つのエンドポイントで全種類を受け取り、自前でルーティングする
-5. ボット自身のpushでWebhookが無限ループする
+まずここで混乱した。
 
-GitHubのドキュメントはフローごとに分散していて、全体像を把握するまでに時間がかかりました。自分が詰まったポイントをまとめます。
-
----
-
-## GitHub Appの認証フロー全体像
-
-まず整理です。GitHub Appには「App自体の認証」と「リポジトリへのアクセス」の2つが必要で、それぞれ別のトークンを使います。
+GitHub Appの認証は「App自体の認証」と「リポジトリへのアクセス」が別になっている。
 
 ```
-RSA秘密鍵
-  ↓ 署名
+RSA秘密鍵で署名
+  ↓
 App JWT（有効10分）
   ↓ POST /app/installations/{id}/access_tokens
 Installation Access Token（有効1時間）
-  ↓ 使う
-GitHub API（リポジトリ操作）
+  ↓
+GitHub API
 ```
 
-OAuth Appに慣れていると、「トークン1つで動く」と思いがちですが、GitHub Appは2段階です。
+OAuth Appならアクセストークン1本でGitHub APIを叩けるが、GitHub Appはまず「俺がそのAppだ」というJWTを作り、それを使ってインストール先のトークンを取得するという2段階が必要になる。公式の説明を読んでいると「App JWT」と「Installation Access Token」が別のページに書いてあって、最初はこの2つが同じものだと思い込んでいた。
 
----
+## JWTのiatを現在時刻にすると弾かれる
 
-## ハマりポイント1: JWTのiatを「60秒前」にする
-
-App JWTを生成するとき、`iat`（issued at）を現在時刻にするとGitHubから弾かれることがあります。
+App JWTを生成するとき、`iat`を`int(time.time())`にしていたら認証エラーになった。
 
 ```python
-# ❌ これで弾かれることがある
-now = int(time.time())
+# これで弾かれた
 jwt_payload = {
-    "iat": now,
-    "exp": now + 540,
+    "iat": int(time.time()),
+    "exp": int(time.time()) + 540,
     "iss": app_id,
 }
+```
 
-# ✅ iatを60秒前にする
+GitHubのサーバーとの間にわずかな時刻のズレがあると、`iat`が「未来の時刻」として扱われて弾かれる。対策は60秒前にずらすことで、公式ドキュメントにも書いてあるが見落としていた。
+
+```python
 now = int(time.time())
 jwt_payload = {
     "iat": now - 60,   # クロックスキュー対策
-    "exp": now + 540,  # 有効9分（上限10分）
+    "exp": now + 540,  # 上限が10分なので余裕を持って9分
     "iss": app_id,
 }
 ```
 
-GitHubのドキュメントに「クロックスキュー対策で60秒前を推奨」と書いてありますが、最初は見落としていました。サーバーとGitHubの時計がわずかにずれていると`iat`が未来の時刻になり弾かれます。
+## Installation Access Tokenを毎回取得するとレート制限に当たる
 
----
-
-## ハマりポイント2: Installation Access Tokenのキャッシュ管理
-
-Installation Access Tokenは1時間で失効します。毎回APIを叩くとレート制限に引っかかるため、キャッシュが必要です。
-
-ポイントは「失効5分前に再取得する」ことです。ギリギリまで使うと、取得直後に失効するケースがあります。
+Installation Access Tokenは1時間で失効する。毎回APIを叩いて取得していたら、しばらくしてレート制限のエラーが出てきた。当然キャッシュが必要で、ただし「失効ギリギリまで使う」のも危ない。取得してすぐ失効するケースがあるので、5分前に再取得するようにした。
 
 ```python
-_installation_token_cache: dict[int, tuple[str, float]] = {}
+_token_cache: dict[int, tuple[str, float]] = {}
 
 def _get_installation_token(installation_id: int) -> str:
-    # キャッシュチェック（失効5分前まで利用）
-    cached = _installation_token_cache.get(installation_id)
-    if cached and time.monotonic() < cached[1] - 300:
+    cached = _token_cache.get(installation_id)
+    if cached and time.monotonic() < cached[1] - 300:  # 5分前まで使う
         return cached[0]
 
-    # App JWT生成
     app_jwt = _generate_app_jwt()
-
-    # Installation Access Token取得
     resp = requests.post(
         f"https://api.github.com/app/installations/{installation_id}/access_tokens",
         headers={
@@ -97,27 +77,25 @@ def _get_installation_token(installation_id: int) -> str:
     data = resp.json()
     token = data["token"]
 
-    # expires_atはISO8601形式 "2024-01-01T00:00:00Z"
+    # expires_atがレスポンスに含まれているのでそれを使う
+    # 形式は "2024-01-01T00:00:00Z"
     expires_at_str = data.get("expires_at", "")
     try:
         dt = datetime.fromisoformat(expires_at_str.replace("Z", "+00:00"))
-        expires_monotonic = time.monotonic() + (
-            dt - datetime.now(timezone.utc)
-        ).total_seconds()
+        ttl = (dt - datetime.now(timezone.utc)).total_seconds()
+        expires_monotonic = time.monotonic() + ttl
     except Exception:
-        expires_monotonic = time.monotonic() + 3600  # フォールバック
+        expires_monotonic = time.monotonic() + 3600
 
-    _installation_token_cache[installation_id] = (token, expires_monotonic)
+    _token_cache[installation_id] = (token, expires_monotonic)
     return token
 ```
 
-`expires_at`はAPIレスポンスに含まれているので、計算で求めるより直接使う方が正確です。
+`expires_at`はレスポンスに入っているので、自前で計算するより直接使う方がズレない。
 
----
+## Webhookは全イベントが1つのエンドポイントに届く
 
-## ハマりポイント3: Webhookイベントの全種類を1エンドポイントで受ける
-
-GitHub Appのウェブフックは、インストール・push・PR・marketplace購入など、あらゆるイベントが同一のエンドポイントに届きます。`X-GitHub-Event`ヘッダーでイベント種別を判定し、自前でルーティングします。
+pushだけ受け取るエンドポイントを作れると思っていたが、そうではなかった。インストール・push・PR・Marketplaceの購入など、App宛ての全イベントが同じURLに届く。`X-GitHub-Event`ヘッダーで種別を判定して自前でルーティングする必要がある。
 
 ```python
 @app.post("/webhooks/github")
@@ -128,51 +106,37 @@ async def github_webhook(
 ):
     payload = await request.body()
 
-    # まず署名検証
-    if not x_hub_signature_256:
-        raise HTTPException(status_code=401, detail="Missing signature")
-    if not verify_github_signature(payload, x_hub_signature_256, secret):
-        raise HTTPException(status_code=401, detail="Invalid signature")
+    # 署名検証を先にやる
+    secret = get_secret("github_app_webhook_secret")
+    if not verify_signature(payload, x_hub_signature_256, secret):
+        raise HTTPException(status_code=401)
 
     body = json.loads(payload)
 
-    # イベント種別でルーティング
     if x_github_event == "ping":
-        return {"status": "ok"}
+        return {"status": "ok"}        # App登録直後の疎通確認、即返す
 
     if x_github_event == "installation":
-        # インストール・アンインストール処理
-        ...
+        handle_installation(body)
 
-    if x_github_event == "push":
-        # pushイベント処理
-        ...
+    elif x_github_event == "push":
+        handle_push(body)
 
-    if x_github_event == "pull_request":
-        # PRイベント処理
-        ...
+    elif x_github_event == "pull_request":
+        handle_pull_request(body)
 
-    return {"message": "ignored"}
+    return {"message": "ok"}
 ```
 
-`ping`イベントはApp登録直後にGitHubから疎通確認として送られます。署名検証をスキップして即返さないと、App設定が保存されません。
+`ping`イベントはApp設定を保存したときにGitHubから飛んでくる疎通確認で、これを即座に200で返さないとApp登録が完了しない。署名検証をしてから返すようにしていたら、秘密鍵の設定ミスで署名検証が失敗してApp登録できないという状況にハマった。`ping`だけは先に返す。
 
----
+## Webhook署名検証は`hmac.compare_digest`を使う
 
-## ハマりポイント4: Webhook署名検証の実装
-
-`X-Hub-Signature-256`はHMAC-SHA256です。タイミング攻撃対策として、`hmac.compare_digest`を使います。
+署名の検証を`==`でやっていたが、タイミング攻撃の余地があるので`hmac.compare_digest`を使う。
 
 ```python
-import hashlib
-import hmac
-
-def verify_github_signature(
-    payload: bytes,
-    signature_header: str,
-    secret: str,
-) -> bool:
-    if not signature_header.startswith("sha256="):
+def verify_signature(payload: bytes, signature_header: str, secret: str) -> bool:
+    if not signature_header or not signature_header.startswith("sha256="):
         return False
 
     expected = hmac.new(
@@ -182,45 +146,26 @@ def verify_github_signature(
     ).hexdigest()
 
     actual = signature_header[len("sha256="):]
-
-    # タイミング攻撃対策
     return hmac.compare_digest(expected, actual)
 ```
 
-`==`で比較すると文字列の一致箇所が増えるにつれて処理時間が変わり、タイミング攻撃の余地が生まれます。`compare_digest`は常に固定時間で比較します。
+`==`は文字列の一致箇所が増えるほど処理時間が長くなり、タイミングで情報が漏れる。`compare_digest`は常に一定時間で比較する。
 
----
+## ボット自身のpushでWebhookが無限ループする
 
-## ハマりポイント5: ボット自身のpushによる無限ループ
-
-GitHub Appがドキュメント更新のコミットをpushすると、そのpushイベントが再びWebhookとして届きます。そのままドキュメント生成を走らせると、永遠にループします。
-
-pusherのnameで判定して弾きます。
+GitHub Appがドキュメントを更新してpushすると、そのpushに対してWebhookが届く。そのままドキュメント生成を走らせると永遠にループする。
 
 ```python
 if x_github_event == "push":
     pusher_name = body.get("pusher", {}).get("name", "")
-
-    # ボット自身のpushはスキップ
-    if pusher_name == "github-actions[bot]" or pusher_name.endswith("[bot]"):
+    if pusher_name.endswith("[bot]"):
         return {"message": "ignored"}
 
-    # 以降のドキュメント生成処理へ
-    ...
+    # ここからドキュメント生成処理
 ```
 
-GitHub Actionsを使ってコミットする場合、pusherは`github-actions[bot]`になります。自前のbotアカウントを使う場合は、そのアカウント名を条件に追加してください。
+GitHub ActionsのコミットはpusherがL`github-actions[bot]`になる。自前のbotアカウントでpushするなら、そのアカウント名で判定する。
 
 ---
 
-## まとめ
-
-| ハマりポイント | 対処 |
-|--------------|------|
-| App JWTが弾かれる | `iat`を60秒前に設定 |
-| トークンが頻繁に切れる | 失効5分前にキャッシュ再取得 |
-| イベントが届かない | `ping`イベントを即返す |
-| 署名検証が通らない | `hmac.compare_digest`を使う |
-| 無限ループ | pusher名でbotを弾く |
-
-GitHub Appは設定できると強力ですが、認証フローの全体像を把握するまでが一番大変でした。公式ドキュメントの[Creating a GitHub App](https://docs.github.com/en/apps/creating-github-apps)と[Authenticating as a GitHub App installation](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation)を行き来しながら実装することをおすすめします。
+全体的に「OAuthと同じような感覚でやると詰まる」という印象だった。公式ドキュメントは[Authenticating as a GitHub App installation](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation)と[Receiving webhooks with a GitHub App](https://docs.github.com/en/apps/creating-github-apps/writing-code-for-a-github-app/building-a-github-app-that-responds-to-webhook-events)を最初に読んでおくと全体像が掴めてよかった。
