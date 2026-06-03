@@ -3,7 +3,7 @@ title: "GitHubリポジトリから仕様書を自動生成するSaaSを個人�
 emoji: "📄"
 type: "tech"
 topics: ["個人開発", "AWS", "FastAPI", "GitHubApp", "生成AI"]
-published: false
+published: true
 ---
 
 ## この記事の答え
