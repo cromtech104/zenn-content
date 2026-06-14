@@ -1,5 +1,5 @@
 ---
-title: "個人開発でNAT Gatewayは高すぎる。EC2で自前NATにしてAWSコストを月$40節約した"
+title: "NAT GatewayをEC2自前NATに置き換えてAWSコストを月$40削減した"
 emoji: "💸"
 type: "tech"
 topics: ["aws", "terraform", "lambda", "個人開発", "vpc"]
