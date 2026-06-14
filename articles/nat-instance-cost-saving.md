@@ -6,7 +6,7 @@ topics: ["aws", "terraform", "lambda", "個人開発", "vpc"]
 published: true
 ---
 
-個人でSaaSを作っていて、LambdaをVPC内に置いてRDSに接続する構成にした。しばらくしてAWSの請求を確認したら、NAT Gatewayの固定費だけで月$45かかっていた。サービスがまだ収益ゼロの段階でこれはきつい。
+個人で[RepoCarta](https://repocarta.jp/)というSaaSを作っていて、LambdaをVPC内に置いてRDSに接続する構成にした。しばらくしてAWSの請求を確認したら、NAT Gatewayの固定費だけで月$45かかっていた。サービスがまだ収益ゼロの段階でこれはきつい。
 
 EC2 t3.nanoで代替したら月$4になったので、その手順とTerraformのコードをまとめておく。Amazon Linux 2023はiptablesではなくnftablesを使うので、そこだけ注意が必要だった。
 
