@@ -1,30 +1,22 @@
 ---
-title: "NAT GatewayをEC2自前NATに置き換えてAWSコストを月$40削減した"
+title: "個人開発のAWSコスト削減: NAT GatewayをEC2自前NATに置き換えた話"
 emoji: "💸"
 type: "tech"
 topics: ["aws", "terraform", "lambda", "個人開発", "vpc"]
 published: true
 ---
 
-LambdaをVPC内に置いてRDSに接続する構成を作ると、インターネットへの通信にNATが必要になる。最初はAWS公式の「NAT Gateway」を使ったんだけど、月額固定で約$45かかると気づいた。個人開発でこれは痛い。
+個人でSaaSを作っていて、LambdaをVPC内に置いてRDSに接続する構成にした。しばらくしてAWSの請求を確認したら、NAT Gatewayの固定費だけで月$45かかっていた。サービスがまだ収益ゼロの段階でこれはきつい。
 
-EC2 t3.nanoに自前でNATを立てたら月約$4になった。TerraformのコードとAmazon Linux 2023でのセットアップ手順を残しておく。
+EC2 t3.nanoで代替したら月$4になったので、その手順とTerraformのコードをまとめておく。Amazon Linux 2023はiptablesではなくnftablesを使うので、そこだけ注意が必要だった。
 
 ## なぜNATが要るのか
 
-LambdaをプライベートサブネットVPC内に置くと、デフォルトではインターネットへ出られない。GitHub APIやAnthropic APIなど外部へのリクエストがすべて失敗するので、NATを通して外に出る経路を作る必要がある。
+LambdaをプライベートサブネットのVPC内に置くと、デフォルトではインターネットに出られない。GitHub APIやAnthropic APIへのリクエストがすべて失敗する。NAT経由で外に出る経路を作る必要がある。
 
-選択肢はNAT GatewayかEC2か。
+NAT Gatewayを使えば設定は簡単だが、固定費だけで月$45かかる。データ転送量によってはさらに上乗せされる。EC2 t3.nanoで自前NATを立てれば月$4で済む。単一障害点になるのは許容して、コストを優先した。
 
-| | NAT Gateway | EC2 t3.nano |
-|--|------------|-------------|
-| 月額 | 約$45〜 | 約$4 |
-| 可用性 | 高（AWS管理） | EC2が落ちたら止まる |
-| 設定 | 簡単 | 少し手間がかかる |
-
-個人開発なら可用性より$40/月の差額の方が大事だった。
-
-## Terraformの構成
+## Terraformの実装
 
 ### VPCとサブネット
 
@@ -96,9 +88,9 @@ resource "aws_security_group" "nat" {
 }
 ```
 
-### NATインスタンス本体
+### `source_dest_check = false` を忘れると動かない
 
-`source_dest_check = false`が絶対に必要。デフォルトではEC2は自分宛て以外のパケットを捨てるので、これをOFFにしないとNATとして機能しない。最初これを知らなくて詰まった。
+EC2インスタンス本体で一番はまったのがここ。デフォルトでEC2は「宛先が自分でないパケット」を捨てる。これをオフにしないとNATとして機能しない。
 
 ```hcl
 resource "aws_instance" "nat" {
@@ -135,15 +127,14 @@ resource "aws_route_table_association" "private" {
 }
 ```
 
-### user_data（NATのセットアップスクリプト）
+### Amazon Linux 2023はnftablesを使う
 
-Amazon Linux 2023はiptablesではなくnftablesを使う。これを知らずにiptablesの設定をそのまま試して動かなかった。
+ここも詰まった。AL2023ではiptablesが使えず、nftablesで書く必要がある。ネット上のサンプルはiptablesのものが多いので注意。
 
 ```bash
 #!/bin/bash
 set -e
 
-# IPフォワーディングを有効化
 echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/99-ip-forward.conf
 sysctl -p /etc/sysctl.d/99-ip-forward.conf
 
@@ -165,11 +156,11 @@ NFTEOF
 systemctl enable --now nftables
 ```
 
-`masquerade`でプライベートIPをEC2のパブリックIPに変換して外に出す。
+`masquerade`でプライベートIPをEC2のパブリックIPに変換して外へ出す。
 
-### IAMロール（SSM用）
+### SSMでSSHなしに入れるようにしておく
 
-SSMのSession Managerを使えばSSHポートを開けずにEC2に入れるので、セキュリティグループをシンプルに保てる。
+NAT インスタンスにSSHポートを開けたくないので、SSM Session Managerのロールを付けておく。EC2にそのまま入って設定を確認するときに使う。
 
 ```hcl
 resource "aws_iam_role" "nat_instance" {
@@ -206,14 +197,14 @@ aws ec2 describe-images \
   --region ap-northeast-1
 ```
 
-AMI IDは定期的に更新されるが、Terraformで自動追従させると意図しないEC2の再作成が起きる。`variables.tf`に固定値で書いておく方が安心。
+Terraformで自動追従させると`apply`のたびにEC2が再作成されることがあるので、`variables.tf`に固定値で書いておく方が安全。
 
-## 注意点
+## やっておかないといけないこと
 
-**EC2が止まったら外に出られなくなる。** 1台構成なので単一障害点になる。個人開発なら許容範囲だと思っているが、止まったときはコンソールかTerraformで再起動する。
+**EC2が止まると外に出られなくなる。** 単一障害点なので、インスタンスが落ちたらLambdaから外への通信が全部止まる。止まったときはコンソールかTerraformで再起動する。
 
-**EC2が再作成されるとENIが変わる。** `terraform apply`でEC2が再作成されるとENIのIDが変わり、ルートテーブルの参照が壊れる。インスタンスタイプを変えるときは要注意。
+**EC2を再作成するとENIが変わる。** インスタンスタイプを変えるなど`terraform apply`でEC2が再作成されるとネットワークインターフェースIDが変わり、ルートテーブルの参照が壊れる。AMI IDを固定しておけば基本的には起きない。
 
 ---
 
-差額は月$40、年間$480。個人開発の段階では大きい。プロダクションで可用性が必要になったらNAT Gatewayに戻せばいい。
+月$40、年$480の差は個人開発の初期には大きい。可用性が必要になったタイミングでNAT Gatewayに戻せばいい。
