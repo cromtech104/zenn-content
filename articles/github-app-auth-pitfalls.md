@@ -170,3 +170,5 @@ GitHub Actionsのコミットはpusherが`github-actions[bot]`になる。自前
 ---
 
 全体的に「OAuthと同じような感覚でやると詰まる」という印象だった。公式ドキュメントは[Authenticating as a GitHub App installation](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation)と[Receiving webhooks with a GitHub App](https://docs.github.com/en/apps/creating-github-apps/writing-code-for-a-github-app/building-a-github-app-that-responds-to-webhook-events)を最初に読んでおくと全体像が掴めてよかった。
+
+本記事で詰まった実装をすべて乗り越えて作ったのが [RepoCarta](https://repocarta.jp/) です。GitHubリポジトリのドキュメントをAIで自動生成するSaaSで、GitHub Appとして各ユーザーのリポジトリに接続しています。似たようなGitHub App連携のサービスを作ろうとしている方の参考になれば。
