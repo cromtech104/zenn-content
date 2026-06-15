@@ -6,15 +6,15 @@ topics: ["aws", "terraform", "lambda", "個人開発", "vpc"]
 published: true
 ---
 
-個人で[RepoCarta](https://repocarta.jp/)というSaaSを作っていて、LambdaをVPC内に置いてRDSに接続する構成にした。しばらくしてAWSの請求を確認したら、NAT Gatewayの固定費だけで月$45かかっていた。サービスがまだ収益ゼロの段階でこれはきつい。
+LambdaをVPC内に置いてRDSに接続する構成を作った。しばらくしてAWSの請求を確認したら、NAT Gatewayの固定費だけで月$45かかっていた。サービスがまだ軌道に乗っていない段階でこれはきつい。
 
-EC2 t3.nanoで代替したら月$4になったので、その手順とTerraformのコードをまとめておく。Amazon Linux 2023はiptablesではなくnftablesを使うので、そこだけ注意が必要だった。
+EC2 t3.nanoで自前NATを立てたら月$4になった。TerraformのコードとAmazon Linux 2023でのセットアップを残しておく。AL2023はiptablesが使えずnftablesで書く必要があって、ネット上のサンプルと違う点があったのでそこも含めて。
 
-## なぜNATが要るのか
+## そもそもなぜNATが要るのか
 
-LambdaをプライベートサブネットのVPC内に置くと、デフォルトではインターネットに出られない。GitHub APIやAnthropic APIへのリクエストがすべて失敗する。NAT経由で外に出る経路を作る必要がある。
+LambdaをプライベートサブネットのVPC内に置くと、インターネットに出られない。外部APIへのリクエストがすべて失敗する。NAT経由で出口を作る必要がある。
 
-NAT Gatewayを使えば設定は簡単だが、固定費だけで月$45かかる。データ転送量によってはさらに上乗せされる。EC2 t3.nanoで自前NATを立てれば月$4で済む。単一障害点になるのは許容して、コストを優先した。
+NAT GatewayはAWSマネージドで設定も簡単だが、固定費だけで月$45かかる。データ転送量によってはさらに乗る。EC2 t3.nanoで自前NATを立てれば月$4。単一障害点になることは許容して、コストを優先した。
 
 ## Terraformの実装
 
@@ -90,7 +90,7 @@ resource "aws_security_group" "nat" {
 
 ### `source_dest_check = false` を忘れると動かない
 
-EC2インスタンス本体で一番はまったのがここ。デフォルトでEC2は「宛先が自分でないパケット」を捨てる。これをオフにしないとNATとして機能しない。
+ここで一番詰まった。EC2はデフォルトで「宛先が自分でないパケット」を捨てる。これをオフにしないとNATとして機能しない。設定してないと通信が一切通らないのに原因に気づきにくい。
 
 ```hcl
 resource "aws_instance" "nat" {
@@ -127,9 +127,9 @@ resource "aws_route_table_association" "private" {
 }
 ```
 
-### Amazon Linux 2023はnftablesを使う
+### Amazon Linux 2023ではiptablesが使えない
 
-ここも詰まった。AL2023ではiptablesが使えず、nftablesで書く必要がある。ネット上のサンプルはiptablesのものが多いので注意。
+もう一つ詰まった点。AL2023はnftablesを採用していてiptablesが動かない。ネット上のEC2 NATのサンプルはiptablesベースのものが多いので、そのままコピーしても機能しない。
 
 ```bash
 #!/bin/bash
@@ -158,9 +158,9 @@ systemctl enable --now nftables
 
 `masquerade`でプライベートIPをEC2のパブリックIPに変換して外へ出す。
 
-### SSMでSSHなしに入れるようにしておく
+### SSH不要でEC2に入れるようにSSMを付ける
 
-NAT インスタンスにSSHポートを開けたくないので、SSM Session Managerのロールを付けておく。EC2にそのまま入って設定を確認するときに使う。
+NATインスタンスにSSHポートを開けたくないが、設定確認のために入れる必要はある。SSM Session Managerのロールを付けておけばポートを開けずに入れる。
 
 ```hcl
 resource "aws_iam_role" "nat_instance" {
@@ -197,14 +197,14 @@ aws ec2 describe-images \
   --region ap-northeast-1
 ```
 
-Terraformで自動追従させると`apply`のたびにEC2が再作成されることがあるので、`variables.tf`に固定値で書いておく方が安全。
+AMI IDをTerraformで自動追従させると`apply`のたびにEC2が再作成されることがある。`variables.tf`に固定値で書いておく方が安全。
 
-## やっておかないといけないこと
+## 運用上の注意
 
-**EC2が止まると外に出られなくなる。** 単一障害点なので、インスタンスが落ちたらLambdaから外への通信が全部止まる。止まったときはコンソールかTerraformで再起動する。
+**EC2が落ちると外に出られなくなる。** 単一障害点なのでインスタンスが停止するとLambdaから外への通信がすべて止まる。止まったときはコンソールかTerraformで再起動する。
 
-**EC2を再作成するとENIが変わる。** インスタンスタイプを変えるなど`terraform apply`でEC2が再作成されるとネットワークインターフェースIDが変わり、ルートテーブルの参照が壊れる。AMI IDを固定しておけば基本的には起きない。
+**EC2を再作成するとENIのIDが変わる。** `terraform apply`でEC2が作り直されるとネットワークインターフェースIDが変わってルートテーブルの参照が壊れる。インスタンスタイプを変えるときは要注意。AMI IDを固定しておけばこれは基本起きない。
 
 ---
 
-月$40、年$480の差は個人開発の初期には大きい。可用性が必要になったタイミングでNAT Gatewayに戻せばいい。
+月$40、年$480の差は小さいサービスの初期にはけっこう大きい。可用性が必要になったタイミングでNAT Gatewayに切り替えればいい。
