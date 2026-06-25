@@ -23,7 +23,7 @@ def verify_github_signature(payload: bytes, signature: str, secret: str) -> bool
     return hmac.compare_digest(expected, signature)
 ```
 
-`==`ではなく`hmac.compare_digest`で比較するのはタイミング攻撃への対策。Webhookエンドポイントに到達したら最初にここを通して、合わなければ即401を返す。
+`==`ではなく`hmac.compare_digest`で比較するのはタイミング攻撃への対策。Webhookエンドポイントに到達したら最初にここを通して、合わなければ即401を返す。なお、このWebhookを送ってくるGitHub App側の認証（JWTのiatずれ・Installation Tokenのキャッシュ・bot pushの無限ループ）でも別に詰まったので、それは[別の記事](/articles/github-app-auth-pitfalls)にまとめた。
 
 ## リポジトリのファイルを全部LLMに渡せるのは小規模だけ
 

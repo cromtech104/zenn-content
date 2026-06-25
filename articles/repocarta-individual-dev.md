@@ -89,11 +89,15 @@ GitHubのWebhookにはタイムアウトがあります。ドキュメント生�
 
 そのためAPI Lambdaは受け取ったWebhookをSQSに積んで即座に200を返し、doc-updater Lambdaが非同期で実際の処理を担う構成にしました。これでGitHubからの再送問題も防げます。
 
+このWebhook受信からLLM処理までの設計（署名検証・冪等性・SQSでのLambda分離・コンテキストの2パス処理）は[別の記事](/articles/github-webhook-claude-docs)に詳しく書きました。
+
 ### NATインスタンスに自前EC2を使う理由
 
 LambdaをVPC内に置く場合、RDSへの安全なアクセスのためプライベートサブネットに配置します。するとインターネット（GitHub APIやAnthropic API）への通信にNATが必要になります。
 
 AWSのマネージドサービス「NAT Gateway」は月額約$32かかります。代わりにEC2 t3.nano（月額約$4）で自前NATを構築しました。個人開発で高可用性よりコストを優先した判断です。
+
+TerraformのコードやAmazon Linux 2023でのnftables設定など、自前NATの具体的な作り方は[別の記事](/articles/nat-instance-cost-saving)にまとめています。
 
 ### Q&Aのモデル使い分け
 
@@ -109,7 +113,7 @@ GitHub AppはOAuthとは全く異なる認証フローを持ちます。
 - リポジトリへのアクセス：Installation Access Token（1時間で失効）
 - Webhookのイベント分岐：インストール・push・PRマージなどを同一エンドポイントで受け取り、イベントタイプで処理を分岐
 
-Installation Access Tokenのキャッシュ管理（失効5分前に再取得）や、Webhook署名検証の実装など、ドキュメントが散らばっていて把握するまでが大変でした。
+Installation Access Tokenのキャッシュ管理（失効5分前に再取得）や、Webhook署名検証の実装など、ドキュメントが散らばっていて把握するまでが大変でした。JWTの`iat`を現在時刻にすると弾かれる話やbot pushの無限ループなど、ここで詰まった点は[別の記事](/articles/github-app-auth-pitfalls)に細かく書きました。
 
 ### pgvectorの導入
 

@@ -165,3 +165,5 @@ def _normalize_path(self, path) -> str | None:
 ---
 
 2ステップへの分割は「全部渡す」が破綻してから気づいた。JSONパースは最初から複数キー候補とコードフェンス除去を入れておけば後で悩まずに済む。
+
+このチケット→Draft PR生成を実際のサービスにしたのが [Keros](https://keros.repocarta.jp) で、Backlogのチケットからリポジトリを読んでDraft PRまで出す（マージはしない）。なぜマージまでやらずDraft PRで止めて人のレビューを残しているのか、という運用側の考えは[別の記事](/articles/ai-fix-review-before-merge)に書いた。
